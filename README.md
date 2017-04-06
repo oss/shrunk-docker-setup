@@ -6,7 +6,7 @@ Usage
 -----
 Simply run the script and follow the instructions.
 
-  $ shrunk-docker-setup
+  $ ./shrunk-docker-setup
 
 The script will primarily:
 

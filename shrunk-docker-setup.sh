@@ -1,0 +1,178 @@
+#!/bin/bash
+
+# Set some variables to use later
+PGM="shrunk-docker-setup"
+
+echo -e "Welcome to the Shrunk Docker Setup Script $USER!"
+echo -e "Estimated installation time: 5 minutes"
+sleep 3
+
+# Sanity checks
+if [ $USER == "root" ]; then
+    echo -e "$PGM: This script should not be run as root."
+    exit 1
+fi
+# Confirm localhost can reach sun4150.rutgers.edu
+ping -c 1 sun4150.rutgers.edu > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: cannot ping sun4150.rutgers.edu."
+  echo -e "Please install on a machine that can reach sun4150.rutgers.edu.  Exiting..."
+  exit 1
+fi
+
+# Confirm that Docker is installed
+echo -e "\nConfirm that Docker is installed..."
+yum list installed docker > /dev/null 2>&1
+
+if [ $? -eq 1 ]; then
+  # Docker is not installed
+  echo -e "\nInstalling Docker now..."
+  sudo yum -y install docker > /dev/null
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not install Docker.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Starting Docker daemon
+sudo systemctl enable docker > /dev/null 2>&1
+sudo systemctl start docker > /dev/null 2>&1
+
+# Adding docker group if it does not exist
+echo -e "\nCreating docker group..."
+[ $(getent group somegroupname) ] || sudo groupadd docker
+
+# Confirm that user is in docker group
+id -Gn $USER | grep &>/dev/null '\bdocker\b'
+if [ $? -eq 1 ]; then
+    echo -e "\nAdding user to the docker group..."
+    sudo usermod -aG docker $USER
+    sudo systemctl restart docker
+fi
+
+# Confirm if user has created login entry for Docker Registry on sun4150
+echo -e "\nConfirming if $USER has created a login for the Docker Registry on sun4150..."
+echo -e "Enter Enigma Card Password when prompted:"
+
+ssh -t $USER@sun4150.rutgers.edu "sudo cat /opt/docker-registry/volumes/auth/htpasswd | grep -q '\b$USER\b'" > /dev/null 2>&1
+if [ $? -eq 1 ]; then
+  # Get password user wants to use for Docker Registry Profile
+  while true; do
+    echo -e "\n$PGM: You have not created a login for the Docker Registy yet."
+    read -s -p 'Enter desired password to use with Docker Registry Profile: ' PASSWORD
+    read -s -p $'\x0aEnter the password again: ' PASSWORDCONFIRM
+    if [ "$PASSWORD" == "$PASSWORDCONFIRM" ]; then
+      break
+    fi
+    echo -e "\n$PGM: ERROR: entered passwords do not match.  Try again..."
+  done
+
+  # Add user and password to htpasswd file for Docker Registry
+  echo -e "\nEnter Enigma Card Password when prompted:"
+  ssh -t $USER@sun4150.rutgers.edu "sudo htpasswd -bB /opt/docker-registry/volumes/auth/htpasswd $USER $PASSWORD" > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not add new user to the registry.  Follow the manual instructions at http://omachi/wiki/index.php/Docker#Docker_Registry_on_Sun4150.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Login to the Docker Registry
+while true; do
+  echo -e "\nLogin to the Docker Registry."
+  echo -e "Username = NetID"
+  echo -e "Password = Docker Registry Password"
+  sudo docker login sun4150.rutgers.edu
+  if [ $? -eq 0 ]; then
+      break
+  fi
+  sleep 1
+done
+
+# Install python-pip and docker-compose
+echo -e "\nInstalling python-pip..."
+sudo yum -y install python-pip > /dev/null
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: could not install python-pip.  Exiting..."
+  exit 1
+fi
+
+echo -e "\nInstalling docker-compose..."
+sudo pip install --upgrade docker-compose > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: could not install docker-compose.  Exiting..."
+  exit 1
+fi
+
+# Get shrunk-dev git project
+if [ ! -d "docker-shrunk-dev" ]; then
+  echo -e "\nDownloading docker-shrunk-dev git project..."
+  git clone --recursive ssh://git@phab.rutgers.edu/source/docker-shrunk-dev.git > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not git clone docker-shrunk-dev.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Get Geolite2-City library
+echo -e "\nDownloading Geolite2-City library..."
+cd docker-shrunk-dev/volumes/app/shrunk
+wget http://geolite.maxmind.com/download/geoip/database/GeoLite2-City.mmdb.gz > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: could not wget GeoLite2-City.mmdb.gz.  Exiting..."
+  exit 1
+fi
+
+# Make sure GeoLite2-City.mmdb does not already exist
+if [ ! -f GeoLite2-City.mmdb ]; then
+  gunzip GeoLite2-City.mmdb.gz
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not gunzip GeoLite2-City.mmdb.gz.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Install config.py file into docker-shrunk-dev/volumes/app/shrunk/shrunk/
+echo -e "\nInstalling config.py file..."
+cp ../../../config.py shrunk/
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: could not copy config.py.  Exiting..."
+  exit 1
+fi
+cd ../../../
+
+# Build the containers with docker-compose
+echo -e "\nDownloading Docker Shrunk Images & Creating Docker Shrunk Containers..."
+sudo docker-compose up --build -d
+if [ $? -ne 0 ]; then
+  echo -e "\n$PGM: ERROR: could not create the containers with docker-compose.  Exiting..."
+  exit 1
+fi
+
+# Confirm if dummy database has been restored yet
+sudo docker-compose exec db mongo --eval "db.adminCommand('listDatabases')" | grep -q "\bshrunk_users\b"
+if [ $? -ne 0 ]; then
+  # Restore dummy database into the shrunk-db container
+  echo -e "\nRestoring dummy database..."
+  sudo docker-compose exec db mongorestore /data/db/dump
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not restore dummy mongodb database.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Confirm if user exists in shrunk-users database
+sudo docker-compose exec db mongo shrunk_users --eval "db.users.find({'netid':'$USER'})" | grep -q $USER
+if [ $? -ne 0 ]; then
+  # Add user to the shrunk-users database
+  echo -e "\nAdding $USER to shrunk-users database"
+  sudo docker-compose exec db mongo shrunk_users --eval "db.users.insert({'netid':'$USER', 'type': 20})"
+  if [ $? -ne 0 ]; then
+    echo -e "\n$PGM: ERROR: could not restore add user to shrunk_users database.  Exiting..."
+    exit 1
+  fi
+fi
+
+# Done!
+echo -e "\n$PGM: Shrunk Project Setup complete!"
+echo -e "You should be able to login to Shrunk at localhost:5000 now."
+

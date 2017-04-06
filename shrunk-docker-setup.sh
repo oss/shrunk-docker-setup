@@ -66,6 +66,7 @@ if [ $? -eq 1 ]; then
       break
     fi
     echo -e "\n$PGM: ERROR: entered passwords do not match.  Try again..."
+    sleep 1
   done
 
   # Add user and password to htpasswd file for Docker Registry

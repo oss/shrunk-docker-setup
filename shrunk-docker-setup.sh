@@ -1,4 +1,5 @@
 #!/bin/bash
+# shrunk-docker-setup: Installs Shrunk Developer Environment using Docker
 
 # Set some variables to use later
 PGM="shrunk-docker-setup"

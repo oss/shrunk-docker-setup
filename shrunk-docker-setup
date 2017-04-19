@@ -177,4 +177,5 @@ fi
 # Done!
 echo -e "\n$PGM: Shrunk Project Setup complete!"
 echo -e "You should be able to login to Shrunk at localhost:5000 with your enigma card now."
+echo -e "Find more information about this git project at: https://phab.rutgers.edu/source/docker-shrunk-dev/"
 
